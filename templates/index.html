@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Network Traffic Prediction</title>
+
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+
+  <!-- DataTables CSS -->
+  <link href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css" rel="stylesheet" />
+
+  <style>
+    :root {
+      --bs-primary: #0d6efd;
+      --bs-success: #198754;
+      --bs-info: #0dcaf0;
+    }
+    body {
+      padding-top: 2rem;
+      padding-bottom: 2rem;
+    }
+    #chartContainer, #networkGraphContainer {
+      max-width: 900px;
+      margin: 2rem auto;
+    }
+    #networkGraphContainer {
+      height: 500px;
+      display: none; /* Hidden by default */
+    }
+  </style>
+</head>
+<body class="bg-body">
+
+  <div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h1 class="text-primary text-center flex-grow-1">Network Traffic Prediction with GNN</h1>
+      <button id="themeToggle" class="btn btn-outline-secondary ms-3">Switch to Dark Mode</button>
+    </div>
+
+    <p class="lead text-center mb-4">
+      Click the button below to predict network traffic volume for each node.<br />
+      Values are normalized between 0 and 1; higher means more traffic.
+    </p>
+
+    <div class="text-center mb-4">
+      <button id="predictBtn" class="btn btn-success btn-lg me-3">Predict Traffic</button>
+
+      <select id="chartTypeSelect" class="form-select d-inline-block w-auto align-middle" aria-label="Select chart type">
+        <option value="bar" selected>Bar Chart</option>
+        <option value="line">Line Chart</option>
+        <option value="pie">Pie Chart</option>
+      </select>
+
+      <button id="showNetworkGraphBtn" class="btn btn-info ms-3">Show Network Graph</button>
+    </div>
+
+    <div id="alertPlaceholder"></div>
+
+    <table id="resultTable" class="table table-striped table-bordered" style="width:100%; display:none;">
+      <thead class="table-dark">
+        <tr>
+          <th>Node</th>
+          <th>Predicted Traffic</th>
+        </tr>
+      </thead>
+      <tbody id="resultBody"></tbody>
+    </table>
+
+    <div id="chartContainer" style="display:none;">
+      <canvas id="trafficChart" style="max-height:400px;"></canvas>
+    </div>
+
+    <div id="networkGraphContainer"></div>
+  </div>
+
+  <!-- jQuery -->
+  <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+
+  <!-- Bootstrap JS Bundle -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- DataTables JS -->
+  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- AnyChart (for network graph) -->
+  <script src="https://cdn.anychart.com/releases/8.12.1/js/anychart-core.min.js"></script>
+  <script src="https://cdn.anychart.com/releases/8.12.1/js/anychart-graph.min.js"></script>
+
+  <script>
+    const predictBtn = document.getElementById('predictBtn');
+    const resultTable = $('#resultTable');
+    const resultBody = document.getElementById('resultBody');
+    const alertPlaceholder = document.getElementById('alertPlaceholder');
+    const themeToggle = document.getElementById('themeToggle');
+    const chartContainer = document.getElementById('chartContainer');
+    const networkGraphContainer = document.getElementById('networkGraphContainer');
+    const chartTypeSelect = document.getElementById('chartTypeSelect');
+    const showNetworkGraphBtn = document.getElementById('showNetworkGraphBtn');
+
+    let trafficChart = null;
+    let dataTable = null;
+    let currentData = null; // store latest prediction data
+
+    // Show Bootstrap alert
+    function showAlert(message, type) {
+      alertPlaceholder.innerHTML = `
+        <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+          ${message}
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>`;
+    }
+
+    // Initialize DataTable
+    function initDataTable() {
+      if ($.fn.DataTable.isDataTable('#resultTable')) {
+        dataTable.destroy();
+      }
+      dataTable = resultTable.DataTable({
+        paging: true,
+        searching: true,
+        info: false,
+        order: [[1, 'desc']],
+        lengthMenu: [5, 10, 25, 50],
+      });
+    }
+
+    // Initialize Chart.js chart with dynamic type and fixed Y-axis from -1 to 1
+    function initChart(labels, values, chartType) {
+      if (trafficChart) {
+        trafficChart.destroy();
+      }
+      const ctx = document.getElementById('trafficChart').getContext('2d');
+      trafficChart = new Chart(ctx, {
+        type: chartType,
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Predicted Traffic',
+            data: values,
+            backgroundColor: chartType === 'pie' ? generateColors(values.length) : 'rgba(25, 135, 84, 0.7)',
+            borderColor: chartType === 'pie' ? '#fff' : 'rgba(25, 135, 84, 1)',
+            borderWidth: 1,
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: chartType === 'pie' ? {} : {
+            y: {
+              min: -1,
+              max: 1,
+              ticks: { stepSize: 0.2 }
+            }
+          },
+          plugins: {
+            legend: { display: chartType === 'pie' }
+          }
+        }
+      });
+    }
+
+    // Generate distinct colors for pie chart slices
+    function generateColors(num) {
+      const colors = [];
+      for (let i = 0; i < num; i++) {
+        colors.push(`hsl(${(i * 360 / num)}, 70%, 60%)`);
+      }
+      return colors;
+    }
+
+    // Load theme from localStorage or default to light
+    function loadTheme() {
+      const savedTheme = localStorage.getItem('theme');
+      if (savedTheme === 'dark') {
+        document.documentElement.setAttribute('data-bs-theme', 'dark');
+        themeToggle.textContent = 'Switch to Light Mode';
+      } else {
+        document.documentElement.setAttribute('data-bs-theme', 'light');
+        themeToggle.textContent = 'Switch to Dark Mode';
+      }
+    }
+
+    // Toggle theme and save preference
+    themeToggle.addEventListener('click', () => {
+      const currentTheme = document.documentElement.getAttribute('data-bs-theme');
+      if (currentTheme === 'dark') {
+        document.documentElement.setAttribute('data-bs-theme', 'light');
+        themeToggle.textContent = 'Switch to Dark Mode';
+        localStorage.setItem('theme', 'light');
+      } else {
+        document.documentElement.setAttribute('data-bs-theme', 'dark');
+        themeToggle.textContent = 'Switch to Light Mode';
+        localStorage.setItem('theme', 'dark');
+      }
+    });
+
+    // On page load, apply saved theme
+    loadTheme();
+
+    // Handle Predict button click
+    predictBtn.addEventListener('click', () => {
+      predictBtn.disabled = true;
+      showAlert('Predicting... Please wait.', 'info');
+      chartContainer.style.display = 'none';
+      networkGraphContainer.style.display = 'none';
+      resultTable.hide();
+      resultBody.innerHTML = '';
+
+      fetch('/predict', { method: 'POST' })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`Server error: ${response.statusText}`);
+          }
+          return response.json();
+        })
+        .then(data => {
+          if (!data.length) {
+            showAlert('No prediction data received.', 'warning');
+            return;
+          }
+
+          currentData = data; // store for reuse
+
+          // Populate table body
+          data.forEach(item => {
+            const row = document.createElement('tr');
+            const nodeCell = document.createElement('td');
+            nodeCell.textContent = item.node;
+            const predCell = document.createElement('td');
+            predCell.textContent = item.predicted_traffic.toFixed(4);
+            row.appendChild(nodeCell);
+            row.appendChild(predCell);
+            resultBody.appendChild(row);
+          });
+
+          // Initialize DataTable
+          resultTable.show();
+          initDataTable();
+
+          // Prepare data for chart
+          const labels = data.map(d => d.node);
+          const values = data.map(d => d.predicted_traffic);
+
+          // Show chart with selected type
+          chartContainer.style.display = 'block';
+          initChart(labels, values, chartTypeSelect.value);
+
+          showAlert('Prediction completed successfully!', 'success');
+        })
+        .catch(error => {
+          showAlert('Error fetching predictions: ' + error.message, 'danger');
+          resultTable.hide();
+          chartContainer.style.display = 'none';
+          networkGraphContainer.style.display = 'none';
+        })
+        .finally(() => {
+          predictBtn.disabled = false;
+        });
+    });
+
+    // Update chart when chart type changes
+    chartTypeSelect.addEventListener('change', () => {
+      if (!currentData) return; // no data yet
+      const labels = currentData.map(d => d.node);
+      const values = currentData.map(d => d.predicted_traffic);
+      initChart(labels, values, chartTypeSelect.value);
+    });
+
+    // Show/hide network graph
+    showNetworkGraphBtn.addEventListener('click', () => {
+      if (networkGraphContainer.style.display === 'block') {
+        networkGraphContainer.style.display = 'none';
+        showNetworkGraphBtn.textContent = 'Show Network Graph';
+      } else {
+        if (!currentData) {
+          showAlert('Please run prediction first.', 'warning');
+          return;
+        }
+        networkGraphContainer.style.display = 'block';
+        showNetworkGraphBtn.textContent = 'Hide Network Graph';
+        renderNetworkGraph(currentData);
+      }
+    });
+
+    // Render network graph with AnyChart
+    function renderNetworkGraph(data) {
+      // Explanation:
+      // The "box" shape you see is AnyChart's default layout when nodes are connected in a simple linear chain.
+      // To get meaningful layout, you should provide actual edges from your network data.
+      // Here, for demo, we connect each node to the next one in order.
+
+      const nodes = data.map(d => ({ id: d.node, name: d.node }));
+      const edges = [];
+      for (let i = 0; i < nodes.length - 1; i++) {
+        edges.push({ from: nodes[i].id, to: nodes[i + 1].id });
+      }
+
+      anychart.onDocumentReady(function () {
+        const graphData = { nodes: nodes, edges: edges };
+        const chart = anychart.graph(graphData);
+        chart.container('networkGraphContainer');
+        chart.draw();
+      });
+    }
+  </script>
+</body>
+</html>
